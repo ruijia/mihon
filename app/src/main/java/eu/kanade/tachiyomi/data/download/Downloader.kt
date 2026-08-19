@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.library.LibraryUpdateNotifier
 import eu.kanade.tachiyomi.data.notification.NotificationHandler
 import eu.kanade.tachiyomi.network.HttpException
+import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.source.UnmeteredSource
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
@@ -43,7 +44,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
 import mihon.core.archive.ZipWriter
+import mihon.core.archive.archiveReader
 import nl.adaptivity.xmlutil.serialization.XML
+import okhttp3.Request
 import okhttp3.Response
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
@@ -62,6 +65,7 @@ import tachiyomi.domain.track.interactor.GetTracks
 import tachiyomi.i18n.MR
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -104,6 +108,12 @@ class Downloader(
      */
     @Volatile
     var isPaused: Boolean = false
+
+    /**
+     * Per-source cache of the whole-chapter CBZ capability probe (fork addition).
+     * Key is the source id; true means `HEAD {chapter.url}/file` answered `X-Cbz-Direct: 1`.
+     */
+    private val cbzDirectSources = ConcurrentHashMap<Long, Boolean>()
 
     init {
         launchNow {
@@ -339,6 +349,20 @@ class Downloader(
             download.chapter.scanlator,
             download.chapter.url,
         )
+
+        // Fork addition: whole-chapter CBZ download for self-hosted sources that
+        // declare it (Acg-Hub Komga-compat, header `X-Cbz-Direct: 1`). The server
+        // 302-redirects to a cloud-drive direct link, so bytes never touch it.
+        // Any failure falls through to the regular page-by-page path below.
+        run {
+            val cbzDirname = downloadChapterAsCbz(download, mangaDir)
+            if (cbzDirname != null) {
+                cache.addChapter(cbzDirname, mangaDir, download.manga)
+                download.status = Download.State.DOWNLOADED
+                return
+            }
+        }
+
         val tmpDir = mangaDir.createDirectory(chapterDirname + TMP_DIR_SUFFIX)!!
 
         try {
@@ -601,6 +625,79 @@ class Downloader(
             fileName.startsWith("$pagePrefix.") ||
                 fileName.startsWith("${pagePrefix}__001.")
             )
+
+    /**
+     * Fork addition: try to download the whole chapter as a single CBZ.
+     *
+     * Only fires for Komga-shaped chapter URLs whose server answers the
+     * `HEAD {url}/file` probe with `X-Cbz-Direct: 1` (probed once per source).
+     * The GET follows the server's 302 to a cloud-drive CDN link; OkHttp keeps
+     * the request headers across the redirect, which matters because the link
+     * is bound to the requesting User-Agent.
+     *
+     * @return the chapter dir name (without `.cbz`) if the chapter landed as a
+     * CBZ; null to fall back to the regular page-by-page download.
+     */
+    private suspend fun downloadChapterAsCbz(
+        download: Download,
+        mangaDir: UniFile,
+    ): String? {
+        val chapterUrl = download.chapter.url
+        if (!chapterUrl.contains("/api/v1/books/")) return null
+        val source = download.source
+        val fileUrl = "$chapterUrl/file"
+
+        val supported = cbzDirectSources.getOrPut(source.id) {
+            try {
+                source.client.newCall(
+                    Request.Builder().url(fileUrl).head().headers(source.headers).build(),
+                ).await().use { it.isSuccessful && it.header("X-Cbz-Direct") == "1" }
+            } catch (e: Exception) {
+                logcat(LogPriority.WARN, e) { "CBZ-direct probe failed for ${source.name}" }
+                false
+            }
+        }
+        if (!supported) return null
+
+        // Clean file name: display name without the "(size)" suffix and without
+        // the `_hash` disambiguator (user decision 2026-08-18). The clean name is
+        // registered in getValidChapterDirNames, so dedupe/reader/delete find it.
+        val chapterDirname = provider.getCleanChapterDirName(
+            download.chapter.name,
+            download.chapter.scanlator,
+        )
+
+        download.status = Download.State.DOWNLOADING
+        val tmp = mangaDir.createFile("$chapterDirname.cbz$TMP_DIR_SUFFIX") ?: return null
+        return try {
+            source.client.newCall(
+                Request.Builder().url(fileUrl).headers(source.headers).build(),
+            ).await().use { response ->
+                if (!response.isSuccessful) {
+                    tmp.delete()
+                    return null
+                }
+                response.body.source().saveTo(tmp.openOutputStream())
+            }
+            // The download counts only if the archive opens and has entries —
+            // a truncated transfer or an HTML error page must not be recorded
+            // as a downloaded chapter.
+            val entryCount = tmp.archiveReader(context).use { reader ->
+                reader.useEntries { entries -> entries.count() }
+            }
+            if (entryCount == 0) {
+                tmp.delete()
+                return null
+            }
+            tmp.renameTo("$chapterDirname.cbz")
+            chapterDirname
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            logcat(LogPriority.WARN, e) { "CBZ-direct download failed, falling back to pages" }
+            tmp.delete()
+            null
+        }
+    }
 
     /**
      * Archive the chapter pages as a CBZ.

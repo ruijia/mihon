@@ -231,6 +231,26 @@ class DownloadProvider(
         }
     }
 
+    /**
+     * Fork addition: chapter dir name for whole-chapter CBZ downloads from
+     * self-hosted sources — the display name with the Komga size suffix
+     * (e.g. " (12.6 MiB)") stripped and WITHOUT the `_hash` disambiguator.
+     * Safe there because those sources build names from `{number} - {title}`,
+     * which is unique per series; the hash exists for sources with duplicate
+     * chapter names.
+     */
+    fun getCleanChapterDirName(chapterName: String, chapterScanlator: String?): String {
+        var dirName = sanitizeChapterName(chapterName).replace(SIZE_SUFFIX_REGEX, "")
+        if (!chapterScanlator.isNullOrBlank()) {
+            dirName = chapterScanlator + "_" + dirName
+        }
+        return DiskUtil.buildValidFilename(
+            dirName,
+            DiskUtil.MAX_FILE_NAME_BYTES - 4, // .cbz
+            libraryPreferences.disallowNonAsciiFilenames.get(),
+        )
+    }
+
     fun isChapterDirNameChanged(oldChapter: Chapter, newChapter: Chapter): Boolean {
         return getChapterDirName(oldChapter.name, oldChapter.scanlator, oldChapter.url) !=
             getChapterDirName(newChapter.name, newChapter.scanlator, newChapter.url)
@@ -251,11 +271,19 @@ class DownloadProvider(
             // Archived chapters
             add("$chapterDirName.cbz")
 
+            // Fork addition: clean name used by whole-chapter CBZ downloads
+            add("${getCleanChapterDirName(chapterName, chapterScanlator)}.cbz")
+
             // any legacy names
             legacyChapterDirNames.forEach {
                 add(it)
                 add("$it.cbz")
             }
         }
+    }
+
+    private companion object {
+        // Trailing Komga-style size suffix: " (12.6 MiB)", " (0 B)", " (1,024 KB)"
+        val SIZE_SUFFIX_REGEX = Regex("""\s*\([\d.,]+\s*[KMGT]?i?B\)\s*$""")
     }
 }
