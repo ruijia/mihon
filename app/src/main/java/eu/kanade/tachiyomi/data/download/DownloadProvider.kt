@@ -271,8 +271,16 @@ class DownloadProvider(
             // Archived chapters
             add("$chapterDirName.cbz")
 
-            // Fork addition: clean name used by whole-chapter CBZ downloads
-            add("${getCleanChapterDirName(chapterName, chapterScanlator)}.cbz")
+            // Fork addition: clean name used by whole-chapter CBZ downloads.
+            // BOTH forms are required and they serve different callers:
+            // `findChapterDir` looks the name up as a file on disk (needs .cbz),
+            // while DownloadCache stores archives WITHOUT the extension
+            // (`renewCache` maps a cbz file to `nameWithoutExtension`, and
+            // `addChapter` is given the bare name), and the downloaded checkmark
+            // is a membership test against that cache.
+            val cleanChapterDirName = getCleanChapterDirName(chapterName, chapterScanlator)
+            add(cleanChapterDirName)
+            add("$cleanChapterDirName.cbz")
 
             // any legacy names
             legacyChapterDirNames.forEach {
