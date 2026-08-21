@@ -21,6 +21,10 @@ import eu.kanade.core.util.addOrRemove
 import eu.kanade.core.util.insertSeparators
 import eu.kanade.domain.chapter.interactor.GetAvailableScanlators
 import eu.kanade.domain.chapter.interactor.SetReadStatus
+import eu.kanade.domain.chapter.model.MangaEdition
+import eu.kanade.domain.chapter.model.availableEditions
+import eu.kanade.domain.chapter.model.editionOrNull
+import eu.kanade.domain.chapter.model.effectiveEdition
 import eu.kanade.domain.manga.interactor.GetExcludedScanlators
 import eu.kanade.domain.manga.interactor.SetExcludedScanlators
 import eu.kanade.domain.manga.interactor.UpdateManga
@@ -154,6 +158,19 @@ class MangaViewModel(
 
     private val filteredChapters: List<ChapterList.Item>?
         get() = successState?.processedChapters
+
+    /**
+     * Fork addition: [allChapters] narrowed to the edition on screen. The download and
+     * continue-reading actions read this instead of the whole list, so pressing them
+     * while looking at 章节 never reaches into 单行本/番外 — those are separate tracks
+     * whose chapter numbers restart at 1.
+     */
+    private val editionChapters: List<ChapterList.Item>?
+        get() {
+            val chapters = allChapters ?: return null
+            val edition = successState?.activeEdition ?: return chapters
+            return chapters.filter { it.chapter.editionOrNull() == edition }
+        }
 
     val chapterSwipeStartAction = libraryPreferences.swipeToEndAction.get()
     val chapterSwipeEndAction = libraryPreferences.swipeToStartAction.get()
@@ -623,11 +640,11 @@ class MangaViewModel(
      */
     fun getNextUnreadChapter(): Chapter? {
         val successState = successState ?: return null
-        return successState.chapters.getNextUnread(successState.manga)
+        return editionChapters.orEmpty().getNextUnread(successState.manga)
     }
 
     private fun getUnreadChapters(): List<Chapter> {
-        val chapterItems = if (skipFiltered) filteredChapters.orEmpty() else allChapters.orEmpty()
+        val chapterItems = if (skipFiltered) filteredChapters.orEmpty() else editionChapters.orEmpty()
         return chapterItems
             .filter { (chapter, dlStatus) -> !chapter.read && dlStatus == Download.State.NOT_DOWNLOADED }
             .map { it.chapter }
@@ -640,7 +657,7 @@ class MangaViewModel(
     }
 
     private fun getBookmarkedChapters(): List<Chapter> {
-        val chapterItems = if (skipFiltered) filteredChapters.orEmpty() else allChapters.orEmpty()
+        val chapterItems = if (skipFiltered) filteredChapters.orEmpty() else editionChapters.orEmpty()
         return chapterItems
             .filter { (chapter, dlStatus) -> chapter.bookmark && dlStatus == Download.State.NOT_DOWNLOADED }
             .map { it.chapter }
@@ -699,6 +716,18 @@ class MangaViewModel(
                 deleteChapters(items.map { it.chapter })
             }
         }
+    }
+
+    /**
+     * Fork addition: switch the visible edition (章节 / 单行本 / 番外). Purely a view
+     * filter over chapters already in the db — nothing is refetched or deleted.
+     */
+    fun setEdition(edition: MangaEdition) {
+        if (successState?.selectedEdition == edition) return
+        // A selection made in the outgoing edition would linger invisibly in the
+        // bottom action menu, so drop it.
+        toggleAllSelection(false)
+        updateSuccessState { it.copy(selectedEdition = edition) }
     }
 
     fun runDownloadAction(action: DownloadAction) {
@@ -1127,6 +1156,8 @@ class MangaViewModel(
             val dialog: Dialog? = null,
             val hasPromptedToAddBefore: Boolean = false,
             val hideMissingChapters: Boolean = false,
+            // Fork addition: the edition the user is currently looking at (null = untouched).
+            val selectedEdition: MangaEdition? = null,
         ) : State {
             val processedChapters by lazy {
                 chapters.applyFilters(manga).toList()
@@ -1135,6 +1166,21 @@ class MangaViewModel(
             val isAnySelected by lazy {
                 chapters.fastAny { it.selected }
             }
+
+            /**
+             * Fork addition: editions this manga actually has. Empty for every source
+             * but the self-hosted one, so nothing below changes upstream behaviour.
+             */
+            val availableEditions by lazy {
+                chapters.map { it.chapter }.availableEditions()
+            }
+
+            /**
+             * Fork addition: the edition currently shown, or null when there is nothing
+             * to split (single edition, or a source that has no editions at all).
+             */
+            val activeEdition: MangaEdition?
+                get() = availableEditions.takeIf { it.size > 1 }?.effectiveEdition(selectedEdition)
 
             val chapterListItems by lazy {
                 if (hideMissingChapters) {
@@ -1182,7 +1228,12 @@ class MangaViewModel(
                 val unreadFilter = manga.unreadFilter
                 val downloadedFilter = manga.downloadedFilter
                 val bookmarkedFilter = manga.bookmarkedFilter
+                val edition = activeEdition
                 return asSequence()
+                    // Fork addition: one edition at a time — chapter counts, the missing-chapter
+                    // warning and continue-reading all read this list, and they only make sense
+                    // within a single edition (each numbers itself 1..N).
+                    .filter { (chapter) -> edition == null || chapter.editionOrNull() == edition }
                     .filter { (chapter) -> applyFilter(unreadFilter) { !chapter.read } }
                     .filter { (chapter) -> applyFilter(bookmarkedFilter) { chapter.bookmark } }
                     .filter { applyFilter(downloadedFilter) { it.isDownloaded || isLocalManga } }

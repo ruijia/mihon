@@ -46,9 +46,11 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastMap
+import eu.kanade.domain.chapter.model.MangaEdition
 import eu.kanade.presentation.components.relativeDateText
 import eu.kanade.presentation.manga.components.ChapterDownloadAction
 import eu.kanade.presentation.manga.components.ChapterHeader
+import eu.kanade.presentation.manga.components.EditionSelector
 import eu.kanade.presentation.manga.components.ExpandableMangaDescription
 import eu.kanade.presentation.manga.components.MangaActionRow
 import eu.kanade.presentation.manga.components.MangaBottomActionMenu
@@ -100,6 +102,9 @@ fun MangaScreen(
     onRefresh: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
+
+    // For the fork's edition selector (章节 / 单行本 / 番外)
+    onEditionSelected: (MangaEdition) -> Unit,
 
     // For cover dialog
     onCoverClicked: () -> Unit,
@@ -153,6 +158,7 @@ fun MangaScreen(
             onRefresh = onRefresh,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
+            onEditionSelected = onEditionSelected,
             onCoverClicked = onCoverClicked,
             onShareClicked = onShareClicked,
             onDownloadActionClicked = onDownloadActionClicked,
@@ -189,6 +195,7 @@ fun MangaScreen(
             onRefresh = onRefresh,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
+            onEditionSelected = onEditionSelected,
             onCoverClicked = onCoverClicked,
             onShareClicked = onShareClicked,
             onDownloadActionClicked = onDownloadActionClicked,
@@ -231,6 +238,9 @@ private fun MangaScreenSmallImpl(
     onRefresh: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
+
+    // For the fork's edition selector (章节 / 单行本 / 番外)
+    onEditionSelected: (MangaEdition) -> Unit,
 
     // For cover dialog
     onCoverClicked: () -> Unit,
@@ -419,6 +429,17 @@ private fun MangaScreenSmallImpl(
                     }
 
                     item(
+                        key = MangaScreenItem.EDITION_SELECTOR,
+                        contentType = MangaScreenItem.EDITION_SELECTOR,
+                    ) {
+                        EditionSelector(
+                            editions = state.availableEditions,
+                            selected = state.activeEdition,
+                            onSelect = onEditionSelected,
+                        )
+                    }
+
+                    item(
                         key = MangaScreenItem.CHAPTER_HEADER,
                         contentType = MangaScreenItem.CHAPTER_HEADER,
                     ) {
@@ -473,6 +494,9 @@ fun MangaScreenLargeImpl(
     onRefresh: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
+
+    // For the fork's edition selector (章节 / 单行本 / 番外)
+    onEditionSelected: (MangaEdition) -> Unit,
 
     // For cover dialog
     onCoverClicked: () -> Unit,
@@ -655,6 +679,17 @@ fun MangaScreenLargeImpl(
                                 bottom = contentPadding.calculateBottomPadding(),
                             ),
                         ) {
+                            item(
+                                key = MangaScreenItem.EDITION_SELECTOR,
+                                contentType = MangaScreenItem.EDITION_SELECTOR,
+                            ) {
+                                EditionSelector(
+                                    editions = state.availableEditions,
+                                    selected = state.activeEdition,
+                                    onSelect = onEditionSelected,
+                                )
+                            }
+
                             item(
                                 key = MangaScreenItem.CHAPTER_HEADER,
                                 contentType = MangaScreenItem.CHAPTER_HEADER,

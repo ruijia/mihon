@@ -17,6 +17,7 @@ import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactoryKey
 import eu.kanade.domain.base.BasePreferences
+import eu.kanade.domain.chapter.model.editionOrNull
 import eu.kanade.domain.chapter.model.toDbChapter
 import eu.kanade.domain.manga.interactor.SetMangaViewerFlags
 import eu.kanade.domain.manga.interactor.UpdateManga
@@ -196,10 +197,22 @@ class ReaderViewModel(
      */
     private val chapterList by lazy {
         val manga = manga!!
-        val chapters = runBlocking { getChaptersByMangaId.await(manga.id, applyScanlatorFilter = true) }
+        val allChapters = runBlocking { getChaptersByMangaId.await(manga.id, applyScanlatorFilter = true) }
 
-        val selectedChapter = chapters.find { it.id == chapterId }
+        val selectedChapter = allChapters.find { it.id == chapterId }
             ?: error("Requested chapter of id $chapterId not found in chapter list")
+
+        // Fork addition: stay inside the edition being read (章节 / 单行本 / 番外).
+        // The three tracks each number themselves 1..N, so without this the reader
+        // would interleave them by chapter number — "next chapter" after raw 3 could
+        // be 番外 4, and the between-chapter gap indicator would count phantom holes.
+        // Null edition (every other source) leaves the list untouched.
+        val edition = selectedChapter.editionOrNull()
+        val chapters = if (edition == null) {
+            allChapters
+        } else {
+            allChapters.filter { it.editionOrNull() == edition }
+        }
 
         val chaptersForReader = when {
             (readerPreferences.skipRead.get() || readerPreferences.skipFiltered.get()) -> {
