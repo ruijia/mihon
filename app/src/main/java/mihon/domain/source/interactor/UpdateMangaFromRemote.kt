@@ -70,13 +70,24 @@ class UpdateMangaFromRemote(
                 )
             }
             awaitUpdateFromSource(manga, update.manga, manualFetch)
-            val newChapters = syncChaptersWithSource.await(
-                rawSourceChapters = update.chapters,
-                manga = manga,
-                source = source,
-                manualFetch = manualFetch,
-                fetchWindow = fetchWindow,
-            )
+            // Must be off the main thread: this does DB writes AND, when a chapter's display
+            // name changed, a SAF `DocumentsContract.renameDocument` per downloaded chapter —
+            // one binder round-trip each. `MangaViewModel.fetchAllFromSource` wraps this whole
+            // call in `withUIContext`, so without this the renames run on the UI thread. A
+            // self-hosted source that renumbers a series (Acg-Hub's per-edition dense numbering)
+            // changes every chapter name at once; 60+ sequential SAF renames on the main thread
+            // is a guaranteed ANR (device traces 2026-08-20 17:56 and 2026-08-21 18:13, both
+            // "Input dispatching timed out", both parked in renameDocument under this call).
+            // Only the network fetch above was dispatched to IO; the heavier half was not.
+            val newChapters = withIOContext {
+                syncChaptersWithSource.await(
+                    rawSourceChapters = update.chapters,
+                    manga = manga,
+                    source = source,
+                    manualFetch = manualFetch,
+                    fetchWindow = fetchWindow,
+                )
+            }
             val updatedManga = mangaRepository.getMangaById(manga.id)
 
             Result.success(RemoteMangaUpdate(manga = updatedManga, newChapters = newChapters))
