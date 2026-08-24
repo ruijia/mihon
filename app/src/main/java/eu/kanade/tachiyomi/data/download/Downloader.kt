@@ -643,7 +643,7 @@ class Downloader(
         mangaDir: UniFile,
     ): String? {
         val chapterUrl = download.chapter.url
-        if (!chapterUrl.contains("/api/v1/books/")) return null
+        if (!provider.usesCleanChapterNames(chapterUrl)) return null
         val source = download.source
         val fileUrl = "$chapterUrl/file"
 
@@ -660,11 +660,13 @@ class Downloader(
         if (!supported) return null
 
         // Clean file name: display name without the "(size)" suffix and without
-        // the `_hash` disambiguator (user decision 2026-08-18). The clean name is
-        // registered in getValidChapterDirNames, so dedupe/reader/delete find it.
-        val chapterDirname = provider.getCleanChapterDirName(
+        // the `_hash` disambiguator (user decision 2026-08-18) — but ask the provider for
+        // it rather than picking the scheme here: it is the one place that decides, so the
+        // renamer and the lookups can't drift to the other spelling.
+        val chapterDirname = provider.getChapterDirName(
             download.chapter.name,
             download.chapter.scanlator,
+            download.chapter.url,
         )
 
         download.status = Download.State.DOWNLOADING

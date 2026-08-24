@@ -388,7 +388,8 @@ class DownloadManager(
             .mapNotNull { mangaDir.findFile(it) }
             .firstOrNull() ?: return
 
-        var newName = provider.getChapterDirName(newChapter.name, newChapter.scanlator, newChapter.url)
+        val bareNewName = provider.getChapterDirName(newChapter.name, newChapter.scanlator, newChapter.url)
+        var newName = bareNewName
         if (oldDownload.isFile && oldDownload.extension == "cbz") {
             newName += ".cbz"
         }
@@ -397,7 +398,10 @@ class DownloadManager(
 
         if (oldDownload.renameTo(newName)) {
             cache.removeChapter(oldChapter, manga)
-            cache.addChapter(newName, mangaDir, manga)
+            // Cache keys are stored WITHOUT the archive extension (`renewCache` maps a cbz
+            // file to `nameWithoutExtension`, and both Downloader paths add the bare name).
+            // Adding `X.cbz` here made this one caller spell the key differently.
+            cache.addChapter(bareNewName, mangaDir, manga)
         } else {
             logcat(LogPriority.ERROR) { "Could not rename downloaded chapter: ${oldNames.joinToString()}" }
         }

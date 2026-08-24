@@ -113,7 +113,14 @@ class DownloadCache(
                             ProtoBuf.decodeFromByteArray<RootDirectory>(it.readBytes())
                         }
                         rootDownloadsDir = diskCache
-                        lastRenew = System.currentTimeMillis()
+                        // Fork fix: age the snapshot from when it was WRITTEN, not from
+                        // when it was read. Stamping `now` restarts the one-hour renew
+                        // window on every app start, so a snapshot that drifted from disk
+                        // (chapters added while the app was dead, a rename that raced a
+                        // process kill) is trusted forever as long as the app keeps being
+                        // restarted — the downloaded checkmark then stays wrong with no
+                        // way for the user to force a rescan.
+                        lastRenew = diskCacheFile.lastModified()
                     }
                 } catch (e: Throwable) {
                     logcat(LogPriority.ERROR, e) { "Failed to initialize from disk cache" }

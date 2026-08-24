@@ -168,6 +168,41 @@ class DownloadProvider(
         chapterUrl: String,
         disallowNonAsciiFilenames: Boolean = libraryPreferences.disallowNonAsciiFilenames.get(),
     ): String {
+        // Fork: for whole-chapter-archive sources the name is the clean one. Deciding it
+        // HERE — the single place every caller already asks for "the name to write" — is
+        // what keeps one library from spelling the same series two ways. Deciding it at
+        // each call site instead (downloader picks clean, renamer picks hashed) is exactly
+        // how a library ends up with both, because which one you get then depends on which
+        // code path happened to run.
+        if (usesCleanChapterNames(chapterUrl)) {
+            return getCleanChapterDirName(chapterName, chapterScanlator, disallowNonAsciiFilenames)
+        }
+        return getHashedChapterDirName(chapterName, chapterScanlator, chapterUrl, disallowNonAsciiFilenames)
+    }
+
+    /**
+     * Fork addition: whether this chapter's source names downloads without the `_hash`
+     * disambiguator.
+     *
+     * Keyed on the URL shape rather than on the runtime CBZ-direct probe on purpose: the
+     * probe result is per-process and arrives only after the first download, so anything
+     * that needs a name earlier (a rename during library sync, a lookup) would guess a
+     * different scheme than the downloader used. The URL shape is available to every
+     * caller at any time and never changes for a given chapter.
+     *
+     * Safe for these sources for the same reason the CBZ-direct path is: their chapter
+     * names come from `{number} - {title}`, unique within a series; the hash exists for
+     * sources that repeat chapter names.
+     */
+    fun usesCleanChapterNames(chapterUrl: String): Boolean =
+        chapterUrl.contains(KOMGA_BOOK_URL_MARKER)
+
+    private fun getHashedChapterDirName(
+        chapterName: String,
+        chapterScanlator: String?,
+        chapterUrl: String,
+        disallowNonAsciiFilenames: Boolean = libraryPreferences.disallowNonAsciiFilenames.get(),
+    ): String {
         var dirName = sanitizeChapterName(chapterName)
         if (!chapterScanlator.isNullOrBlank()) {
             dirName = chapterScanlator + "_" + dirName
@@ -239,7 +274,11 @@ class DownloadProvider(
      * which is unique per series; the hash exists for sources with duplicate
      * chapter names.
      */
-    fun getCleanChapterDirName(chapterName: String, chapterScanlator: String?): String {
+    fun getCleanChapterDirName(
+        chapterName: String,
+        chapterScanlator: String?,
+        disallowNonAsciiFilenames: Boolean = libraryPreferences.disallowNonAsciiFilenames.get(),
+    ): String {
         var dirName = sanitizeChapterName(chapterName).replace(SIZE_SUFFIX_REGEX, "")
         if (!chapterScanlator.isNullOrBlank()) {
             dirName = chapterScanlator + "_" + dirName
@@ -247,7 +286,7 @@ class DownloadProvider(
         return DiskUtil.buildValidFilename(
             dirName,
             DiskUtil.MAX_FILE_NAME_BYTES - 4, // .cbz
-            libraryPreferences.disallowNonAsciiFilenames.get(),
+            disallowNonAsciiFilenames,
         )
     }
 
@@ -271,16 +310,23 @@ class DownloadProvider(
             // Archived chapters
             add("$chapterDirName.cbz")
 
-            // Fork addition: clean name used by whole-chapter CBZ downloads.
-            // BOTH forms are required and they serve different callers:
-            // `findChapterDir` looks the name up as a file on disk (needs .cbz),
-            // while DownloadCache stores archives WITHOUT the extension
-            // (`renewCache` maps a cbz file to `nameWithoutExtension`, and
-            // `addChapter` is given the bare name), and the downloaded checkmark
-            // is a membership test against that cache.
+            // Fork addition: **both** naming schemes are always listed, whichever one
+            // `getChapterDirName` currently writes. This list answers "what might be on
+            // disk", and the answer includes files written before the scheme for this
+            // source changed — dropping the other one would silently orphan every
+            // existing download (no checkmark, re-download, delete leaves the file).
+            // Each also needs the `.cbz` form: `findChapterDir` looks the name up as a
+            // file on disk, while DownloadCache stores archives WITHOUT the extension
+            // (`renewCache` maps a cbz file to `nameWithoutExtension`, and `addChapter`
+            // is given the bare name), and the downloaded checkmark is a membership test
+            // against that cache.
             val cleanChapterDirName = getCleanChapterDirName(chapterName, chapterScanlator)
             add(cleanChapterDirName)
             add("$cleanChapterDirName.cbz")
+
+            val hashedChapterDirName = getHashedChapterDirName(chapterName, chapterScanlator, chapterUrl)
+            add(hashedChapterDirName)
+            add("$hashedChapterDirName.cbz")
 
             // any legacy names
             legacyChapterDirNames.forEach {
@@ -292,6 +338,10 @@ class DownloadProvider(
 
     private companion object {
         // Trailing Komga-style size suffix: " (12.6 MiB)", " (0 B)", " (1,024 KB)"
+        // Fork: Komga-shaped chapter URL. Sources answering on this path serve whole
+        // chapters as one archive and name chapters `{number} - {title}`.
+        const val KOMGA_BOOK_URL_MARKER = "/api/v1/books/"
+
         val SIZE_SUFFIX_REGEX = Regex("""\s*\([\d.,]+\s*[KMGT]?i?B\)\s*$""")
     }
 }
