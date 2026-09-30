@@ -46,6 +46,7 @@ import logcat.LogPriority
 import mihon.core.archive.ZipWriter
 import mihon.core.archive.archiveReader
 import nl.adaptivity.xmlutil.serialization.XML
+import okhttp3.CacheControl
 import okhttp3.Request
 import okhttp3.Response
 import tachiyomi.core.common.i18n.stringResource
@@ -112,6 +113,10 @@ class Downloader(
     /**
      * Per-source cache of the whole-chapter CBZ capability probe (fork addition).
      * Key is the source id; true means `HEAD {chapter.url}/file` answered `X-Cbz-Direct: 1`.
+     * Only successes are stored: the Komga extension's first request is unauthenticated,
+     * so a 401 here is "not logged in yet", not "this source has no CBZ". Caching that
+     * as false makes every later chapter skip the 302 and fall back to `/pages`, which
+     * is empty once the chapter has been uploaded off this machine.
      */
     private val cbzDirectSources = ConcurrentHashMap<Long, Boolean>()
 
@@ -647,15 +652,22 @@ class Downloader(
         val source = download.source
         val fileUrl = "$chapterUrl/file"
 
-        val supported = cbzDirectSources.getOrPut(source.id) {
-            try {
-                source.client.newCall(
-                    Request.Builder().url(fileUrl).head().headers(source.headers).build(),
+        val supported = cbzDirectSources[source.id] ?: run {
+            val ok = try {
+                source.client.newBuilder().cache(null).build().newCall(
+                    Request.Builder()
+                        .url(fileUrl)
+                        .head()
+                        .headers(source.headers)
+                        .cacheControl(CacheControl.FORCE_NETWORK)
+                        .build(),
                 ).await().use { it.isSuccessful && it.header("X-Cbz-Direct") == "1" }
             } catch (e: Exception) {
                 logcat(LogPriority.WARN, e) { "CBZ-direct probe failed for ${source.name}" }
                 false
             }
+            if (ok) cbzDirectSources[source.id] = true
+            ok
         }
         if (!supported) return null
 
@@ -672,8 +684,12 @@ class Downloader(
         download.status = Download.State.DOWNLOADING
         val tmp = mangaDir.createFile("$chapterDirname.cbz$TMP_DIR_SUFFIX") ?: return null
         return try {
-            source.client.newCall(
-                Request.Builder().url(fileUrl).headers(source.headers).build(),
+            source.client.newBuilder().cache(null).build().newCall(
+                Request.Builder()
+                    .url(fileUrl)
+                    .headers(source.headers)
+                    .cacheControl(CacheControl.FORCE_NETWORK)
+                    .build(),
             ).await().use { response ->
                 if (!response.isSuccessful) {
                     tmp.delete()
